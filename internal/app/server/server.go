@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"gitlab.univ-nantes.fr/iutna.info2.r305/proj/internal/pkg/proto"
-	"gitlab.univ-nantes.fr/iutna.info2.r305/proj/internal/pkg/sendrec"
 )
 
 func gererClient(cnx net.Conn, nbClients chan int, dir string) {
@@ -27,30 +26,44 @@ func gererClient(cnx net.Conn, nbClients chan int, dir string) {
 	slog.Info("New client connected", "client", cnx.RemoteAddr().String())
 
 	reader := bufio.NewReader(cnx)
-	scanner := bufio.NewScanner(reader)
 
-	for scanner.Scan() {
-		cmdLine := scanner.Text()
-		parts := strings.Fields(cmdLine) // En prevoyance de la commande "Get"
+	for {
+		// Lecture d'une ligne de commande (terminée par '\n')
+		cmdLine, err := reader.ReadString('\n')
+		if err != nil {
+			slog.Error("Connection error", "error", err)
+			return
+		}
+
+		// On enlève le saut de ligne et les espaces autour
+		cmdLine = strings.TrimSpace(cmdLine)
+		if cmdLine == "" {
+			continue
+		}
+
+		parts := strings.Fields(cmdLine)
 		if len(parts) == 0 {
 			continue
 		}
 
 		cmd := parts[0]
-		slog.Debug("Received command", "command", cmd, "args", parts[1:], "from", cnx.RemoteAddr().String())
+		slog.Debug("Received command",
+			"command", cmd,
+			"args", parts[1:],
+			"from", cnx.RemoteAddr().String(),
+		)
 
 		switch cmd {
 		case proto.CommandeList:
 			commandList(cnx, dir, reader)
+
 		case proto.CommandeEnd:
-			return // Ferme la connexion
+			// On sort de la fonction -> le defer fermera la connexion
+			return
+
 		default:
-			// Commande inconnue
 			slog.Warn("Unknown command", "command", cmd)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		slog.Error("Connection error", "error", err)
 	}
 }
 
@@ -83,7 +96,6 @@ func commandList(cnx net.Conn, dir string, reader *bufio.Reader) {
 	}
 
 	// Attendre le "OK" du client
-	// Utilise reader.ReadString pour etre sur de lire jusqu'au saut de ligne
 	resp, err := reader.ReadString('\n')
 	if err != nil {
 		slog.Error("Error waiting for OK from client", "error", err)
