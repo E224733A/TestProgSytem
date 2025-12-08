@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"gitlab.univ-nantes.fr/iutna.info2.r305/proj/internal/pkg/proto"
+	"gitlab.univ-nantes.fr/iutna.info2.r305/proj/internal/pkg/sendrec"
 )
 
 func gererClient(cnx net.Conn, nbClients chan int, dir string) {
@@ -17,7 +18,6 @@ func gererClient(cnx net.Conn, nbClients chan int, dir string) {
 	nbClients <- 1
 
 	defer func() {
-		// On signale -1 client
 		nbClients <- -1
 		cnx.Close()
 		slog.Info("Connection closed", "client", cnx.RemoteAddr().String())
@@ -26,27 +26,24 @@ func gererClient(cnx net.Conn, nbClients chan int, dir string) {
 	slog.Info("New client connected", "client", cnx.RemoteAddr().String())
 
 	reader := bufio.NewReader(cnx)
+	writer := bufio.NewWriter(cnx)
 
 	for {
-		// Lecture d'une ligne de commande (terminée par '\n')
+		// Lire la commande
 		cmdLine, err := reader.ReadString('\n')
 		if err != nil {
 			slog.Error("Connection error", "error", err)
 			return
 		}
 
-		// On enlève le saut de ligne et les espaces autour
 		cmdLine = strings.TrimSpace(cmdLine)
 		if cmdLine == "" {
 			continue
 		}
 
 		parts := strings.Fields(cmdLine)
-		if len(parts) == 0 {
-			continue
-		}
-
 		cmd := parts[0]
+
 		slog.Debug("Received command",
 			"command", cmd,
 			"args", parts[1:],
@@ -54,11 +51,11 @@ func gererClient(cnx net.Conn, nbClients chan int, dir string) {
 		)
 
 		switch cmd {
+
 		case proto.CommandeList:
-			commandList(cnx, dir, reader)
+			commandList(reader, writer, dir)
 
 		case proto.CommandeEnd:
-			// On sort de la fonction -> le defer fermera la connexion
 			return
 
 		default:
@@ -67,8 +64,9 @@ func gererClient(cnx net.Conn, nbClients chan int, dir string) {
 	}
 }
 
-// --- COMMANDE LISTE ---
-func commandList(cnx net.Conn, dir string, reader *bufio.Reader) {
+// --- COMMANDE LIST ---
+// Utilise sendrec pour envoyer toutes les lignes du protocole.
+func commandList(reader *bufio.Reader, writer *bufio.Writer, dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		slog.Error("Failed to read directory", "error", err)
@@ -83,25 +81,34 @@ func commandList(cnx net.Conn, dir string, reader *bufio.Reader) {
 		}
 	}
 
-	// Envoyer FileCnt
-	fmt.Fprintf(cnx, "%s %d\n", proto.ReponseFileCount, len(files))
+	// 1) Envoyer FileCnt + '\n'
+	header := fmt.Sprintf("%s %d\n", proto.ReponseFileCount, len(files))
+	if err := sendrec.SendMessage(writer, header); err != nil {
+		slog.Error("Failed to send FileCnt", "error", err)
+		return
+	}
 
-	// Envoyer les infos de chaque fichier
+	// 2) Envoyer les noms + tailles, chacun terminé par '\n'
 	for _, f := range files {
 		info, err := f.Info()
 		if err != nil {
+			slog.Warn("Could not stat file", "file", f.Name(), "error", err)
 			continue
 		}
-		fmt.Fprintf(cnx, "%s %d\n", f.Name(), info.Size())
+
+		line := fmt.Sprintf("%s %d\n", f.Name(), info.Size())
+		if err := sendrec.SendMessage(writer, line); err != nil {
+			slog.Error("Failed to send file info", "file", f.Name(), "error", err)
+			return
+		}
 	}
 
-	// Attendre le "OK" du client
-	resp, err := reader.ReadString('\n')
+	// 3) Attendre le OK du client
+	resp, err := sendrec.ReceiveMessage(reader)
 	if err != nil {
-		slog.Error("Error waiting for OK from client", "error", err)
+		slog.Error("Error waiting for client OK", "error", err)
 		return
 	}
-	resp = strings.TrimSpace(resp)
 
 	if resp == proto.ReponseOk {
 		slog.Debug("Client confirmed reception of list")
@@ -114,7 +121,7 @@ func RunServer(port *string, dir *string) {
 
 	nbClients := make(chan int)
 
-	// Compteur de client en temps réel avec une go routine qui compte via le canal
+	// Compteur clients
 	go func() {
 		nb := 0
 		for c := range nbClients {
@@ -123,7 +130,7 @@ func RunServer(port *string, dir *string) {
 		}
 	}()
 
-	// Partie d'écoute du réseau
+	// Écoute réseau
 	l, e := net.Listen("tcp", ":"+*port)
 	if e != nil {
 		slog.Error(e.Error())
@@ -134,17 +141,17 @@ func RunServer(port *string, dir *string) {
 		slog.Debug("Stopped listening on port " + *port)
 	}()
 
-	slog.Info("Server listening on port " + *port)
-	slog.Info("Serving files from directory: " + *dir)
+	slog.Info("Server listening on port "+*port,
+		"directory", *dir)
 
-	// Gestion des clients
+	// Boucle d’acceptation
 	for {
 		cnx, e := l.Accept()
 		if e != nil {
 			slog.Error(e.Error())
 			continue
 		}
-		// go routines pour gérer plusieurs clients
+
 		go gererClient(cnx, nbClients, *dir)
 	}
 }
