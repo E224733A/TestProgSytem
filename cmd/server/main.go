@@ -8,10 +8,11 @@ import (
 	"gitlab.univ-nantes.fr/iutna.info2.r305/proj/internal/app/server"
 )
 
-func parseArgs() (port *string, dir *string) {
+func parseArgs() (port *string, controlPort *string, dir *string) {
 
 	logLevel := flag.Bool("d", false, "enable debug log level")
 	port = flag.String("p", "3333", "server port (default: 3333)")
+	controlPort = flag.String("c", "3334", "control port (default: 3334)")	
 	// Parametre pour le dossier
 	dir = flag.String("dir", ".", "directory to serve (default: .)")
 
@@ -32,7 +33,7 @@ func parseArgs() (port *string, dir *string) {
 }
 
 func main() {
-	port, dir := parseArgs()
+	port, controlPort, dir := parseArgs()
 	// Ajout du dossier au serveur
-	server.RunServer(port, dir)
+	server.RunServer(port, controlPort, dir)
 }
